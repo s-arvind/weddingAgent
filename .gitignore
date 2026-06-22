@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.pkl
+*.jsonl
+embed_progress.json
+data/
+.idea
+docs
