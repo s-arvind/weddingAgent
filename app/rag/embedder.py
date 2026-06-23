@@ -17,9 +17,11 @@ def get_model() -> SentenceTransformer:
                 import torch
                 torch.set_num_threads(os.cpu_count() or 4)
                 model_name = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
-                logger.info("Loading embedding model %s on cpu (%d threads)",
-                            model_name, torch.get_num_threads())
-                _model = SentenceTransformer(model_name, device="cpu")
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                if device == "cpu":
+                    torch.set_num_threads(os.cpu_count() or 4)
+                logger.info("Loading embedding model %s on %s", model_name, device)
+                _model = SentenceTransformer(model_name, device=device)
     return _model
 
 

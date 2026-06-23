@@ -1,0 +1,14 @@
+.env
+.env.prod
+__pycache__
+*.pyc
+*.pyo
+.git
+.gitignore
+embed_progress.json
+*.egg-info
+.pytest_cache
+tests/
+docs/
+frontend/
+scripts/
