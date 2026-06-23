@@ -1,0 +1,17 @@
+fastapi
+uvicorn[standard]
+openai
+groq
+sentence-transformers
+qdrant-client
+psycopg2-binary
+sqlalchemy
+alembic
+redis
+rank-bm25
+streamlit
+ragas
+langsmith
+tqdm
+python-dotenv
+pydantic

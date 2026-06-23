@@ -17,6 +17,21 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    ports:
+      - "6432:6432"
+    environment:
+      DATABASE_URL: postgres://wedding:wedding@postgres:5432/weddingagent
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 100
+      DEFAULT_POOL_SIZE: 20
+    volumes:
+      - ./pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini
+      - ./pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt
+    depends_on:
+      - postgres
+
   valkey:
     image: valkey/valkey:7.2-alpine
     ports:
