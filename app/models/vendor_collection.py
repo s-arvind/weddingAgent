@@ -76,11 +76,12 @@ class VendorCollection:
         limit: int = 10,
         score_threshold: float = 0.0,
     ) -> list:
-        return get_client().search(
+        result = get_client().query_points(
             collection_name=cls.NAME,
-            query_vector=vector,
+            query=vector,
             query_filter=query_filter,
             limit=limit,
             score_threshold=score_threshold,
             with_payload=True,
         )
+        return result.points

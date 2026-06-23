@@ -1,5 +1,6 @@
 import logging
-from sqlalchemy import Column, Text, Integer, Numeric, ARRAY, TIMESTAMP
+from ulid import ULID
+from sqlalchemy import Column, Text, Integer, Numeric, ARRAY, TIMESTAMP, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.orm import DeclarativeBase, Session
 from sqlalchemy.sql import func
@@ -13,8 +14,10 @@ class Base(DeclarativeBase):
 
 class Vendor(Base):
     __tablename__ = "vendors"
+    __table_args__ = (UniqueConstraint("slug", name="uq_vendors_slug"),)
 
-    id               = Column(Text, primary_key=True)
+    id               = Column(Text, primary_key=True, default=lambda: str(ULID()))
+    slug             = Column(Text, nullable=False)   # original folder name, unique
     name             = Column(Text)
     address          = Column(Text)
     city             = Column(Text)
@@ -41,7 +44,7 @@ class Vendor(Base):
         if not vendors:
             return
         stmt = insert(cls).values(vendors)
-        stmt = stmt.on_conflict_do_nothing(index_elements=["id"])
+        stmt = stmt.on_conflict_do_nothing(index_elements=["slug"])
         session.execute(stmt)
         logger.info(f"Inserted {len(vendors)} vendors")
 
