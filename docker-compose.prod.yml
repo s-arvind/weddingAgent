@@ -11,9 +11,15 @@ services:
     environment:
       QDRANT_URL: http://qdrant:6333
       VALKEY_URL: redis://valkey:6379
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0
+      --port 8000
+      --workers 2
+      --timeout-keep-alive 75
 
   qdrant:
-    image: qdrant/qdrant:v1.9.2
+    image: qdrant/qdrant:latest
     restart: unless-stopped
     expose:
       - "6333"
@@ -31,4 +37,6 @@ services:
 
 volumes:
   qdrant_data:
+    external: true
   valkey_data:
+    external: true

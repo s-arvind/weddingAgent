@@ -12,3 +12,4 @@ data/
 docs
 .claude
 .streamlit
+.DS_Store
