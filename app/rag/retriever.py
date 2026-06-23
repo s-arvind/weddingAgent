@@ -54,12 +54,12 @@ def _build_qdrant_filter(filters: dict) -> Filter | None:
     return Filter(must=conditions) if conditions else None
 
 
-def _rrf(ranked_lists: list[list[str]], k: int = RRF_K) -> list[str]:
+def _rrf(ranked_lists: list[list[str]], k: int = RRF_K) -> list[tuple[str, float]]:
     scores: dict[str, float] = {}
     for ranked in ranked_lists:
         for rank, doc_id in enumerate(ranked):
             scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k + rank + 1)
-    return sorted(scores, key=lambda x: scores[x], reverse=True)
+    return sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
 
 def retrieve(
@@ -102,16 +102,16 @@ def retrieve(
             "price_nonveg_max": p.get("price_nonveg_max"),
         }
 
-    dense_ranking = [p["chunk_id"] for hit in dense_hits for p in [hit.payload]]
+    dense_ranking = list(chunk_map.keys())
 
     # ── sparse retrieval (BM25) ───────────────────────────────────────────────
-    corpus = [cid.replace("-", " ").replace("_", " ").split() for cid in chunk_map]
+    chunk_ids = list(chunk_map.keys())
+    corpus = [chunk_map[cid]["text"].lower().split() for cid in chunk_ids]
     bm25_ranking: list[str] = []
     if corpus:
         bm25 = BM25Okapi(corpus)
         query_tokens = query.lower().split()
         scores = bm25.get_scores(query_tokens)
-        chunk_ids = list(chunk_map.keys())
         bm25_ranking = [chunk_ids[i] for i in sorted(range(len(scores)),
                         key=lambda x: scores[x], reverse=True)]
 
@@ -119,7 +119,7 @@ def retrieve(
     fused = _rrf([dense_ranking, bm25_ranking])[:final_top_n]
 
     results = []
-    for chunk_id in fused:
+    for chunk_id, rrf_score in fused:
         if chunk_id not in chunk_map:
             continue
         c = chunk_map[chunk_id]
@@ -132,7 +132,7 @@ def retrieve(
             state=c["state"],
             chunk_type=c["chunk_type"],
             text=c["text"],
-            score=0.0,
+            score=rrf_score,
             categories=c["categories"],
             capacity_min=c["capacity_min"],
             capacity_max=c["capacity_max"],

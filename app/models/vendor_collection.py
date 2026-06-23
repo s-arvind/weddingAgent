@@ -3,8 +3,7 @@ import logging
 from qdrant_client.models import (
     VectorParams, Distance, PointStruct,
     OptimizersConfigDiff, HnswConfigDiff,
-    PayloadSchemaType, SearchRequest,
-    Filter,
+    PayloadSchemaType, Filter,
 )
 from app.db.qdrant import get_client
 

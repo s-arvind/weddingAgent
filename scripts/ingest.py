@@ -1,7 +1,9 @@
 import json
 import re
 import os
+import uuid
 from pathlib import Path
+from ulid import ULID
 from tqdm import tqdm
 from qdrant_client.models import PointStruct
 from dotenv import load_dotenv
@@ -94,7 +96,8 @@ def parse_vendor(vendor_dir: Path) -> dict:
     name = cats[-1] if cats else vid
 
     return {
-        "id":               vid,
+        "id":               str(ULID()),
+        "slug":             vid,
         "name":             name,
         "address":          contact.get("address", "") if isinstance(contact, dict) else "",
         "city":             cats[-3] if len(cats) >= 3 else "",
@@ -122,7 +125,8 @@ def parse_vendor(vendor_dir: Path) -> dict:
 def make_chunks(v: dict) -> list[dict]:
     chunks = []
     payload = {
-        "vendor_id":   v["id"],
+        "vendor_id":   v["id"],    # ULID
+        "vendor_slug": v["slug"],  # original folder name
         "vendor_name": v["name"],
         "city":        v["city"],
         "state":       v["state"],
@@ -146,7 +150,7 @@ def make_chunks(v: dict) -> list[dict]:
         f"Occasions: {', '.join(v['occasions'])}" if v["occasions"] else "",
         f"Phone: {v['mobile']}" if v["mobile"] else "",
     ]))
-    chunks.append({"id": f"{v['id']}_summary", "text": summary,
+    chunks.append({"id": f"{v['slug']}_summary", "text": summary,
                    "payload": {**payload, "chunk_type": "summary"}})
 
     # description chunks
@@ -154,7 +158,7 @@ def make_chunks(v: dict) -> list[dict]:
         para = re.sub(r"\*+", "", para).strip()
         if len(para) < 50:
             continue
-        chunks.append({"id": f"{v['id']}_desc_{i}", "text": para[:900],
+        chunks.append({"id": f"{v['slug']}_desc_{i}", "text": para[:900],
                        "payload": {**payload, "chunk_type": "description"}})
 
     # faq chunks
@@ -165,7 +169,7 @@ def make_chunks(v: dict) -> list[dict]:
         if not q or not a or len(a) < 10 or q in seen:
             continue
         seen.add(q)
-        chunks.append({"id": f"{v['id']}_faq_{i}", "text": f"Q: {q}\nA: {a[:600]}",
+        chunks.append({"id": f"{v['slug']}_faq_{i}", "text": f"Q: {q}\nA: {a[:600]}",
                        "payload": {**payload, "chunk_type": "faq"}})
 
     return chunks
@@ -185,11 +189,13 @@ def save_checkpoint(done: set):
 
 DB_BATCH_SIZE = 500   # vendors per postgres batch
 
-def run():
+def run(limit: int | None = None):
     print("Setting up Qdrant collection...")
     VendorCollection.create()
 
     vendor_dirs = [d for d in DATA_DIR.iterdir() if d.is_dir()]
+    if limit:
+        vendor_dirs = vendor_dirs[:limit]
     print(f"Found {len(vendor_dirs)} vendors.")
 
     done = load_checkpoint()
@@ -228,7 +234,11 @@ def run():
         vectors = embed(texts)
 
         points = [
-            PointStruct(id=c["id"], vector=v, payload=c["payload"])
+            PointStruct(
+                id=str(uuid.uuid5(uuid.NAMESPACE_DNS, c["id"])),
+                vector=v,
+                payload={**c["payload"], "chunk_id": c["id"], "text": c["text"]},
+            )
             for c, v in zip(batch, vectors)
         ]
         VendorCollection.upsert(points)
@@ -242,4 +252,8 @@ def run():
 
 
 if __name__ == "__main__":
-    run()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--limit", type=int, default=None, help="Process only N vendors (for testing)")
+    args = parser.parse_args()
+    run(limit=args.limit)

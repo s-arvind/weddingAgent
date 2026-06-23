@@ -1,6 +1,6 @@
 # WeddingAgent — Production RAG + Agentic AI System
 
-A production-grade AI agent that helps users discover, compare, and book wedding vendors across India using a corpus of **70,000+ real vendor records** scraped from WeddingWire India.
+A production-grade AI agent that helps users discover, compare, and book wedding vendors across India using a corpus of **70,000+ real vendor records**.
 
 ## What It Does
 
@@ -65,13 +65,13 @@ User Query (natural language)
 | [Architecture](docs/01-architecture.md) | Full system design, component decisions, data flow |
 | [RAG Pipeline](docs/02-rag-pipeline.md) | Chunking strategy, embeddings, vector DB, retrieval |
 | [Agent Design](docs/03-agent-design.md) | Tool definitions, orchestration, multi-step reasoning |
-| [Data Ingestion](docs/04-data-ingestion.md) | Parsing scrape_wire data, cleaning, indexing pipeline |
+| [Data Ingestion](docs/04-data-ingestion.md) | Parsing vendor data, cleaning, indexing pipeline |
 | [Evaluation](docs/05-evaluation.md) | Metrics, test sets, quality gates, monitoring |
 | [Implementation Roadmap](docs/06-implementation-roadmap.md) | Phase-by-phase build plan with milestones |
 
 ---
 
-## Tech Stack (Summary)
+## Tech Stack
 
 | Layer | Choice | Reason |
 |---|---|---|
@@ -86,24 +86,30 @@ User Query (natural language)
 
 ---
 
-## Quick Start (After Building)
+## Quick Start
 
 ```bash
 # 1. Clone and install
-git clone https://github.com/you/weddingagent
-cd weddingagent && pip install -r requirements.txt
+git clone https://github.com/s-arvind/weddingAgent
+cd weddingAgent && pip install -r requirements.txt
 
-# 2. Start infrastructure
-docker-compose up -d  # Qdrant, PostgreSQL, Valkey
+# 2. Copy env and fill in keys
+cp .env.example .env
 
-# 3. Ingest data
-python scripts/ingest.py --data-dir ~/Documents/scrape_wire/data
+# 3. Start infrastructure
+docker compose up -d
 
-# 4. Run the agent
-python -m uvicorn app.main:app --reload
+# 4. Run migrations
+alembic upgrade head
 
-# 5. Open the UI
-streamlit run frontend/app.py
+# 5. Ingest vendor data
+PYTHONPATH=. python scripts/ingest.py
+
+# 6. Start the API
+PYTHONPATH=. uvicorn app.main:app --reload --port 8000
+
+# 7. Start the UI
+PYTHONPATH=. streamlit run frontend/app.py
 ```
 
 ---
@@ -111,7 +117,7 @@ streamlit run frontend/app.py
 ## Project Structure
 
 ```
-weddingagent/
+weddingAgent/
 ├── app/
 │   ├── main.py              # FastAPI entrypoint
 │   ├── agent/
@@ -119,23 +125,23 @@ weddingagent/
 │   │   └── tools.py         # Tool implementations
 │   ├── rag/
 │   │   ├── embedder.py      # Embedding generation
-│   │   ├── retriever.py     # Vector + hybrid search
-│   │   └── reranker.py      # Cross-encoder reranking
+│   │   └── retriever.py     # Hybrid search (dense + BM25 + RRF)
 │   ├── db/
 │   │   ├── qdrant.py        # Vector DB client
 │   │   └── postgres.py      # Structured DB client
+│   ├── models/
+│   │   ├── vendor.py        # Vendor ORM model
+│   │   └── vendor_collection.py  # Qdrant collection ops
 │   └── api/
-│       └── routes.py        # REST endpoints
+│       ├── routes.py        # REST endpoints
+│       ├── schemas.py       # Pydantic request/response models
+│       └── session.py       # Valkey session store
 ├── scripts/
-│   ├── ingest.py            # Data ingestion pipeline
-│   ├── embed_batch.py       # Batch embedding with checkpointing
-│   └── evaluate.py          # Evaluation runner
+│   └── ingest.py            # Data ingestion + embedding pipeline
+├── migrations/              # Alembic migrations
 ├── frontend/
 │   └── app.py               # Streamlit UI
 ├── tests/
-│   ├── test_retrieval.py
-│   ├── test_agent.py
-│   └── eval_dataset.json    # Ground-truth query set
 ├── docker-compose.yml
 ├── requirements.txt
 └── .env.example
