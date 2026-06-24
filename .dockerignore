@@ -10,5 +10,4 @@ embed_progress.json
 .pytest_cache
 tests/
 docs/
-frontend/
 scripts/
