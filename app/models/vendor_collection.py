@@ -1,4 +1,5 @@
 import os
+import time
 import logging
 from qdrant_client.models import (
     VectorParams, Distance, PointStruct,
@@ -58,13 +59,23 @@ class VendorCollection:
         )
 
     @classmethod
-    def upsert(cls, points: list[PointStruct]) -> None:
+    def upsert(cls, points: list[PointStruct], max_retries: int = 5) -> None:
         if not points:
             return
         client = get_client()
         for i in range(0, len(points), cls.UPSERT_BATCH):
             batch = points[i : i + cls.UPSERT_BATCH]
-            client.upsert(collection_name=cls.NAME, points=batch, wait=True)
+            for attempt in range(max_retries):
+                try:
+                    client.upsert(collection_name=cls.NAME, points=batch, wait=False)
+                    break
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        raise
+                    delay = 2 ** attempt
+                    logger.warning("Upsert failed (attempt %d/%d), retrying in %ds: %s",
+                                   attempt + 1, max_retries, delay, e)
+                    time.sleep(delay)
         logger.info("Upserted %d points to Qdrant", len(points))
 
     @classmethod

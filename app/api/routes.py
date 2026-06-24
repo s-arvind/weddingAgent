@@ -1,12 +1,13 @@
 import uuid
 import logging
 from openai import BadRequestError
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from app.api.schemas import ChatRequest, ChatResponse, ChatMessage, HealthResponse
 from app.agent.orchestrator import chat
 from app.db.postgres import check_health as pg_health
 from app.db.qdrant import check_health as qdrant_health
 from app.api.session import get_history, save_history
+from app.api.limiter import limiter
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,8 @@ def health():
 
 
 @router.post("/chat", response_model=ChatResponse)
-def chat_endpoint(req: ChatRequest):
+@limiter.limit("10/minute")
+def chat_endpoint(request: Request, req: ChatRequest):
     session_id = req.session_id or str(uuid.uuid4())
     history    = get_history(session_id)
     history.append({"role": "user", "content": req.message})

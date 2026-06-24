@@ -11,6 +11,8 @@ rank-bm25
 streamlit
 ragas
 langsmith
+langchain-openai
+slowapi
 tqdm
 python-dotenv
 pydantic

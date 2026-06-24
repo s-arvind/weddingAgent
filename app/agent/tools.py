@@ -139,24 +139,40 @@ def search_vendors(
     if capacity_min is not None:  filters["capacity_min"] = capacity_min
     if price_veg_max is not None: filters["price_veg_max"] = price_veg_max
 
-    chunks = retrieve(query, filters=filters, final_top_n=8)
+    chunks = retrieve(query, filters=filters, final_top_n=20)
 
-    seen = set()
-    vendors = []
+    # group all chunks per vendor, preserving RRF rank order
+    vendor_chunks: dict[str, list] = {}
     for c in chunks:
-        if c.vendor_slug in seen:
-            continue
-        seen.add(c.vendor_slug)
+        vendor_chunks.setdefault(c.vendor_slug, []).append(c)
+
+    PRICING_KEYWORDS = ("package", "price", "cost", "charges", "fee", "rate", "starting")
+
+    vendors = []
+    for slug, vchunks in list(vendor_chunks.items())[:8]:
+        primary = vchunks[0]
+
+        # for catering vendors use per-plate price; for others scan chunks for package pricing
+        if primary.price_veg_min:
+            pricing = f"Rs {primary.price_veg_min}-{primary.price_veg_max}/plate (veg)"
+            if primary.price_nonveg_min:
+                pricing += f", Rs {primary.price_nonveg_min}-{primary.price_nonveg_max}/plate (non-veg)"
+        else:
+            pricing = None
+            for c in vchunks:
+                if any(kw in c.text.lower() for kw in PRICING_KEYWORDS):
+                    pricing = c.text[:400]
+                    break
+
         vendors.append({
-            "name":         c.vendor_name,
-            "slug":         c.vendor_slug,
-            "city":         c.city,
-            "state":        c.state,
-            "categories":   c.categories[-2:] if c.categories else [],
-            "capacity":     f"{c.capacity_min}-{c.capacity_max}" if c.capacity_max else "N/A",
-            "price_veg":    f"Rs {c.price_veg_min}-{c.price_veg_max}/plate" if c.price_veg_min else "N/A",
-            "price_nonveg": f"Rs {c.price_nonveg_min}-{c.price_nonveg_max}/plate" if c.price_nonveg_min else "N/A",
-            "snippet":      c.text[:200] if c.text else "",
+            "name":       primary.vendor_name,
+            "slug":       primary.vendor_slug,
+            "city":       primary.city,
+            "state":      primary.state,
+            "categories": primary.categories[-2:] if primary.categories else [],
+            "capacity":   f"{primary.capacity_min}-{primary.capacity_max} guests" if primary.capacity_max else None,
+            "pricing":    pricing,
+            "snippet":    primary.text[:200] if primary.text else "",
         })
 
     return json.dumps({"vendors": vendors, "total": len(vendors)}, ensure_ascii=False)

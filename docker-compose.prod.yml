@@ -18,6 +18,23 @@ services:
       --workers 2
       --timeout-keep-alive 75
 
+  frontend:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    env_file: .env.prod
+    depends_on:
+      - api
+    environment:
+      API_URL: http://api:8000/api/v1
+    command: >
+      streamlit run frontend/app.py
+      --server.port=8501
+      --server.address=0.0.0.0
+      --server.headless=true
+      --server.fileWatcherType=none
+
   qdrant:
     image: qdrant/qdrant:latest
     restart: unless-stopped

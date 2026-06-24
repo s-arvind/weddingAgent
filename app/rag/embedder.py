@@ -36,6 +36,6 @@ def embed(texts: list[str]) -> list[list[float]]:
         texts,
         normalize_embeddings=True,
         show_progress_bar=False,
-        batch_size=int(os.getenv("EMBEDDING_BATCH_SIZE", "64")),
+        batch_size=int(os.getenv("EMBEDDING_BATCH_SIZE", "512")),
     )
     return vectors.tolist()

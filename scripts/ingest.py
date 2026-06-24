@@ -3,6 +3,7 @@ import re
 import os
 import uuid
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 from ulid import ULID
 from tqdm import tqdm
 from qdrant_client.models import PointStruct
@@ -17,8 +18,9 @@ from app.models.vendor_collection import VendorCollection
 from app.rag.embedder import embed
 
 DATA_DIR   = Path(os.getenv("DATA_DIR", "~/Documents/scrape_wire/data")).expanduser()
-BATCH_SIZE = 32
+BATCH_SIZE = int(os.getenv("INGEST_BATCH_SIZE", "512"))
 CHECKPOINT = Path("embed_progress.json")
+CHECKPOINT_EVERY = 10_000  # chunks
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -189,6 +191,19 @@ def save_checkpoint(done: set):
 
 DB_BATCH_SIZE = 500   # vendors per postgres batch
 
+def make_points(batch: list[dict]) -> list[PointStruct]:
+    texts = [c["text"] for c in batch]
+    vectors = embed(texts)
+    return [
+        PointStruct(
+            id=str(uuid.uuid5(uuid.NAMESPACE_DNS, c["id"])),
+            vector=v,
+            payload={**c["payload"], "chunk_id": c["id"], "text": c["text"]},
+        )
+        for c, v in zip(batch, vectors)
+    ]
+
+
 def run(limit: int | None = None):
     print("Setting up Qdrant collection...")
     VendorCollection.create()
@@ -199,56 +214,67 @@ def run(limit: int | None = None):
     print(f"Found {len(vendor_dirs)} vendors.")
 
     done = load_checkpoint()
-    pending_chunks = []
-    db_batch = []
+    chunk_buffer: list[dict] = []
+    db_batch: list[dict] = []
+    chunks_done = 0
 
-    print("Parsing vendors...")
-    for vendor_dir in tqdm(vendor_dirs):
-        v = parse_vendor(vendor_dir)
-        db_data = {k: val for k, val in v.items() if not k.startswith("_")}
-        db_batch.append(db_data)
+    # track in-flight upsert alongside its batch so we only mark done after confirm
+    inflight_future = None
+    inflight_batch: list[dict] = []
 
-        # flush postgres batch
-        if len(db_batch) >= DB_BATCH_SIZE:
+    def confirm_inflight():
+        nonlocal inflight_future, inflight_batch, chunks_done
+        if inflight_future is None:
+            return
+        inflight_future.result()           # raises if upsert failed after retries
+        done.update(c["id"] for c in inflight_batch)
+        chunks_done += len(inflight_batch)
+        if chunks_done % CHECKPOINT_EVERY < len(inflight_batch):
+            save_checkpoint(done)
+        inflight_future = None
+        inflight_batch = []
+
+    def submit_batch(batch: list[dict]):
+        nonlocal inflight_future, inflight_batch
+        confirm_inflight()                 # wait for previous before GPU starts next
+        points = make_points(batch)        # GPU forward pass
+        inflight_future = pool.submit(VendorCollection.upsert, points)
+        inflight_batch = batch
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        for vendor_dir in tqdm(vendor_dirs, desc="Ingesting"):
+            v = parse_vendor(vendor_dir)
+            db_data = {k: val for k, val in v.items() if not k.startswith("_")}
+            db_batch.append(db_data)
+
+            if len(db_batch) >= DB_BATCH_SIZE:
+                with Session(get_engine()) as session:
+                    Vendor.bulk_insert(session, db_batch)
+                    session.commit()
+                db_batch = []
+
+            for chunk in make_chunks(v):
+                if chunk["id"] not in done:
+                    chunk_buffer.append(chunk)
+
+            while len(chunk_buffer) >= BATCH_SIZE:
+                batch = chunk_buffer[:BATCH_SIZE]
+                chunk_buffer = chunk_buffer[BATCH_SIZE:]
+                submit_batch(batch)
+
+        # flush remaining chunks
+        if chunk_buffer:
+            submit_batch(chunk_buffer)
+
+        confirm_inflight()  # wait for last upsert and mark it done
+
+        if db_batch:
             with Session(get_engine()) as session:
                 Vendor.bulk_insert(session, db_batch)
                 session.commit()
-            db_batch = []
-
-        for chunk in make_chunks(v):
-            if chunk["id"] not in done:
-                pending_chunks.append(chunk)
-
-    # flush remaining postgres batch
-    if db_batch:
-        with Session(get_engine()) as session:
-            Vendor.bulk_insert(session, db_batch)
-            session.commit()
-
-    print(f"{len(pending_chunks)} chunks to embed.")
-
-    # embed in batches
-    for i in tqdm(range(0, len(pending_chunks), BATCH_SIZE), desc="Embedding"):
-        batch = pending_chunks[i: i + BATCH_SIZE]
-        texts = [c["text"] for c in batch]
-        vectors = embed(texts)
-
-        points = [
-            PointStruct(
-                id=str(uuid.uuid5(uuid.NAMESPACE_DNS, c["id"])),
-                vector=v,
-                payload={**c["payload"], "chunk_id": c["id"], "text": c["text"]},
-            )
-            for c, v in zip(batch, vectors)
-        ]
-        VendorCollection.upsert(points)
-
-        done.update(c["id"] for c in batch)
-        if i % (BATCH_SIZE * 100) == 0:
-            save_checkpoint(done)
 
     save_checkpoint(done)
-    print("Ingestion complete.")
+    print(f"Ingestion complete. {chunks_done} chunks embedded.")
 
 
 if __name__ == "__main__":
