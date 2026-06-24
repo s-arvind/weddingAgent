@@ -101,10 +101,24 @@ def chat(messages: list[dict]) -> tuple[str, list[dict]]:
 
         if not msg.tool_calls:
             answer = msg.content or ""
-            updated = messages + [{"role": "assistant", "content": answer}]
-            return answer, updated
+            full_messages.append({"role": "assistant", "content": answer})
+            return answer, full_messages[1:]  # exclude system message; keep tool messages for context
 
-        full_messages.append(msg)
+        full_messages.append({
+            "role": "assistant",
+            "content": msg.content or "",
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments,
+                    },
+                }
+                for tc in msg.tool_calls
+            ],
+        })
         for tc in msg.tool_calls:
             args   = json.loads(tc.function.arguments)
             result = dispatch(tc.function.name, args)
@@ -129,5 +143,5 @@ def chat(messages: list[dict]) -> tuple[str, list[dict]]:
         temperature=0.2,
     )
     answer  = summary.choices[0].message.content or "I was unable to complete your request."
-    updated = messages + [{"role": "assistant", "content": answer}]
-    return answer, updated
+    full_messages.append({"role": "assistant", "content": answer})
+    return answer, full_messages[1:]

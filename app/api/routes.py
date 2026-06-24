@@ -41,7 +41,7 @@ def chat_endpoint(request: Request, req: ChatRequest):
     try:
         answer, updated = chat(history)
     except BadRequestError as e:
-        logger.warning("LLM bad request (off-topic or tool gen failure): %s", e)
+        logger.warning("LLM bad request — body: %s", e.body if hasattr(e, "body") else str(e))
         answer  = FALLBACK_ANSWER
         updated = history + [{"role": "assistant", "content": answer}]
     except Exception as e:
@@ -49,13 +49,18 @@ def chat_endpoint(request: Request, req: ChatRequest):
         answer  = "Something went wrong. Please try again."
         updated = history + [{"role": "assistant", "content": answer}]
 
-    # strip tool-role messages — they break Groq on replay and confuse clients
-    safe_history = [m for m in updated if m["role"] in ("user", "assistant")]
-    save_history(session_id, safe_history)
+    save_history(session_id, updated)  # keep tool messages so slugs survive across turns
 
+    # strip tool messages and intermediate assistant tool-call messages for API response only
+    response_messages = [
+        m for m in updated
+        if m.get("role") in ("user", "assistant")
+        and not m.get("tool_calls")
+        and m.get("content")
+    ]
     return ChatResponse(
         answer=answer,
         session_id=session_id,
         messages=[ChatMessage(role=m["role"], content=m["content"])
-                  for m in safe_history],
+                  for m in response_messages],
     )
