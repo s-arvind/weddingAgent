@@ -1,7 +1,10 @@
 import json
 import re
 import os
+import time
 import uuid
+import itertools
+from collections import deque
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from ulid import ULID
@@ -19,6 +22,8 @@ from app.rag.embedder import embed
 
 DATA_DIR   = Path(os.getenv("DATA_DIR", "~/Documents/scrape_wire/data")).expanduser()
 BATCH_SIZE = int(os.getenv("INGEST_BATCH_SIZE", "512"))
+PARSE_WORKERS = int(os.getenv("INGEST_PARSE_WORKERS", "16"))
+PARSE_AHEAD   = int(os.getenv("INGEST_PARSE_AHEAD", "2000"))  # vendors prefetched
 CHECKPOINT = Path("embed_progress.json")
 CHECKPOINT_EVERY = 10_000  # chunks
 
@@ -191,6 +196,29 @@ def save_checkpoint(done: set):
 
 DB_BATCH_SIZE = 500   # vendors per postgres batch
 
+def parse_one(vendor_dir: Path) -> tuple[dict, list[dict]]:
+    """Parse a vendor dir into (db_row, chunks). Runs in worker threads — the
+    file reads here release the GIL, so this overlaps with GPU embedding."""
+    v = parse_vendor(vendor_dir)
+    db_data = {k: val for k, val in v.items() if not k.startswith("_")}
+    return db_data, make_chunks(v)
+
+
+def prefetch(fn, items, workers: int, ahead: int):
+    """Yield fn(item) in order, keeping up to `ahead` calls in flight across a
+    thread pool. Bounded memory; keeps the GPU fed without reading everything."""
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        it = iter(items)
+        q: deque = deque()
+        for x in itertools.islice(it, ahead):
+            q.append(ex.submit(fn, x))
+        for x in it:
+            yield q.popleft().result()
+            q.append(ex.submit(fn, x))
+        while q:
+            yield q.popleft().result()
+
+
 def make_points(batch: list[dict]) -> list[PointStruct]:
     texts = [c["text"] for c in batch]
     vectors = embed(texts)
@@ -218,15 +246,20 @@ def run(limit: int | None = None):
     db_batch: list[dict] = []
     chunks_done = 0
 
+    # per-stage wall-clock, so the bottleneck is visible (parse vs GPU vs network)
+    t_parse_wait = t_gpu = t_upsert_wait = t_db = 0.0
+
     # track in-flight upsert alongside its batch so we only mark done after confirm
     inflight_future = None
     inflight_batch: list[dict] = []
 
     def confirm_inflight():
-        nonlocal inflight_future, inflight_batch, chunks_done
+        nonlocal inflight_future, inflight_batch, chunks_done, t_upsert_wait
         if inflight_future is None:
             return
+        t = time.perf_counter()
         inflight_future.result()           # raises if upsert failed after retries
+        t_upsert_wait += time.perf_counter() - t
         done.update(c["id"] for c in inflight_batch)
         chunks_done += len(inflight_batch)
         if chunks_done % CHECKPOINT_EVERY < len(inflight_batch):
@@ -235,46 +268,68 @@ def run(limit: int | None = None):
         inflight_batch = []
 
     def submit_batch(batch: list[dict]):
-        nonlocal inflight_future, inflight_batch
+        nonlocal inflight_future, inflight_batch, t_gpu
         confirm_inflight()                 # wait for previous before GPU starts next
+        t = time.perf_counter()
         points = make_points(batch)        # GPU forward pass
+        t_gpu += time.perf_counter() - t
         inflight_future = pool.submit(VendorCollection.upsert, points)
         inflight_batch = batch
 
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        for vendor_dir in tqdm(vendor_dirs, desc="Ingesting"):
-            v = parse_vendor(vendor_dir)
-            db_data = {k: val for k, val in v.items() if not k.startswith("_")}
-            db_batch.append(db_data)
+    # one long-lived connection beats reconnecting to Neon every batch (NullPool)
+    db_session = Session(get_engine())
 
-            if len(db_batch) >= DB_BATCH_SIZE:
-                with Session(get_engine()) as session:
-                    Vendor.bulk_insert(session, db_batch)
-                    session.commit()
-                db_batch = []
+    def flush_db():
+        nonlocal db_batch, t_db
+        if not db_batch:
+            return
+        t = time.perf_counter()
+        Vendor.bulk_insert(db_session, db_batch)
+        db_session.commit()
+        t_db += time.perf_counter() - t
+        db_batch = []
 
-            for chunk in make_chunks(v):
-                if chunk["id"] not in done:
-                    chunk_buffer.append(chunk)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            # parse the next PARSE_AHEAD vendors on worker threads while the GPU
+            # works the current batch — file I/O releases the GIL.
+            parsed = prefetch(parse_one, vendor_dirs, PARSE_WORKERS, PARSE_AHEAD)
 
-            while len(chunk_buffer) >= BATCH_SIZE:
-                batch = chunk_buffer[:BATCH_SIZE]
-                chunk_buffer = chunk_buffer[BATCH_SIZE:]
-                submit_batch(batch)
+            with tqdm(total=len(vendor_dirs), desc="Ingesting") as pbar:
+                while True:
+                    t = time.perf_counter()
+                    item = next(parsed, None)          # blocks only if GPU outran parsing
+                    t_parse_wait += time.perf_counter() - t
+                    if item is None:
+                        break
+                    db_data, chunks = item
+                    db_batch.append(db_data)
+                    if len(db_batch) >= DB_BATCH_SIZE:
+                        flush_db()
 
-        # flush remaining chunks
-        if chunk_buffer:
-            submit_batch(chunk_buffer)
+                    for chunk in chunks:
+                        if chunk["id"] not in done:
+                            chunk_buffer.append(chunk)
 
-        confirm_inflight()  # wait for last upsert and mark it done
+                    while len(chunk_buffer) >= BATCH_SIZE:
+                        batch = chunk_buffer[:BATCH_SIZE]
+                        chunk_buffer = chunk_buffer[BATCH_SIZE:]
+                        submit_batch(batch)
+                    pbar.update(1)
 
-        if db_batch:
-            with Session(get_engine()) as session:
-                Vendor.bulk_insert(session, db_batch)
-                session.commit()
+            # flush remaining chunks
+            if chunk_buffer:
+                submit_batch(chunk_buffer)
+
+            confirm_inflight()  # wait for last upsert and mark it done
+            flush_db()
+    finally:
+        db_session.close()
 
     save_checkpoint(done)
     print(f"Ingestion complete. {chunks_done} chunks embedded.")
+    print(f"Stage time (s): parse_wait={t_parse_wait:.0f} "
+          f"gpu={t_gpu:.0f} upsert_wait={t_upsert_wait:.0f} db={t_db:.0f}")
 
 
 if __name__ == "__main__":
