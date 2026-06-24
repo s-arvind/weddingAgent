@@ -1,6 +1,6 @@
 services:
   api:
-    build: .
+    image: weddingagent-api:latest
     restart: unless-stopped
     ports:
       - "8000:8000"
@@ -11,15 +11,9 @@ services:
     environment:
       QDRANT_URL: http://qdrant:6333
       VALKEY_URL: redis://valkey:6379
-    command: >
-      uvicorn app.main:app
-      --host 0.0.0.0
-      --port 8000
-      --workers 2
-      --timeout-keep-alive 75
 
   frontend:
-    build: .
+    image: weddingagent-frontend:latest
     restart: unless-stopped
     ports:
       - "8501:8501"
@@ -28,11 +22,6 @@ services:
       - api
     environment:
       API_URL: http://api:8000/api/v1
-    command: ["streamlit", "run", "frontend/app.py",
-              "--server.port=8501",
-              "--server.address=0.0.0.0",
-              "--server.headless=true",
-              "--server.fileWatcherType=none"]
 
   qdrant:
     image: qdrant/qdrant:latest
