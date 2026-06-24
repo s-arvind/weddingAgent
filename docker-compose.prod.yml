@@ -28,12 +28,11 @@ services:
       - api
     environment:
       API_URL: http://api:8000/api/v1
-    command: >
-      streamlit run frontend/app.py
-      --server.port=8501
-      --server.address=0.0.0.0
-      --server.headless=true
-      --server.fileWatcherType=none
+    command: ["streamlit", "run", "frontend/app.py",
+              "--server.port=8501",
+              "--server.address=0.0.0.0",
+              "--server.headless=true",
+              "--server.fileWatcherType=none"]
 
   qdrant:
     image: qdrant/qdrant:latest
