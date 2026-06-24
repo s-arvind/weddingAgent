@@ -19,6 +19,10 @@ FROM base AS api
 ARG EMBEDDING_MODEL=BAAI/bge-m3
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('${EMBEDDING_MODEL}', device='cpu')"
 
+# model is cached in the image — run offline so HF never phones home at runtime
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
+
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--timeout-keep-alive", "75"]
 
